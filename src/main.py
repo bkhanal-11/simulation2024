@@ -12,7 +12,6 @@ class PatientPriority(Enum):
 @dataclass
 class SimulationConfig:
     """Configuration parameters for the simulation"""
-    # Existing parameters
     MEAN_INTERARRIVAL_TIME: float = 25.0
     MEAN_PREP_TIME: float = 40.0
     MEAN_OPERATION_TIME: float = 20.0
@@ -21,7 +20,7 @@ class SimulationConfig:
     NUM_RECOVERY_ROOMS: int = 3
     SIM_TIME: float = 10000
     
-    # New parameters for emergency cases
+    # Parameters for emergency cases
     EMERGENCY_PROBABILITY: float = 0.2  # 20% chance of emergency
     EMERGENCY_PREP_TIME_FACTOR: float = 0.5  # Emergency prep takes half the time
     EMERGENCY_OPERATION_TIME_FACTOR: float = 0.8  # Emergency operation takes 80% of regular time
@@ -58,20 +57,6 @@ class Patient:
         """Calculate total time in system"""
         return self.departure_time - self.arrival_time
 
-class PriorityResource(simpy.PriorityResource):
-    """Extension of SimPy's PriorityResource with queue length tracking"""
-    def __init__(self, env, capacity):
-        super().__init__(env, capacity)
-        self.queue_length = 0
-        
-    def request(self, priority):
-        self.queue_length += 1
-        return super().request(priority=priority)
-        
-    def release(self, request):
-        self.queue_length -= 1
-        return super().release(request)
-
 class Hospital:
     """Main hospital simulation class with priority handling"""
     def __init__(self, env: simpy.Environment, config: SimulationConfig):
@@ -79,14 +64,10 @@ class Hospital:
         self.config = config
         self.monitor = None
         
-        # Replace regular resources with priority resources
-        self.prep_rooms = PriorityResource(env, capacity=config.NUM_PREP_ROOMS)
-        self.operating_theatre = PriorityResource(env, capacity=1)
-        self.recovery_rooms = PriorityResource(env, capacity=config.NUM_RECOVERY_ROOMS)
-        
-        # Separate queues for emergency and regular patients
-        self.emergency_patients = []
-        self.regular_patients = []
+        # Resource pools
+        self.prep_rooms = simpy.PriorityResource(env, capacity=config.NUM_PREP_ROOMS)
+        self.operating_theatre = simpy.PriorityResource(env, capacity=1)
+        self.recovery_rooms = simpy.PriorityResource(env, capacity=config.NUM_RECOVERY_ROOMS)
         
         self.patient_count = 0
         
@@ -117,13 +98,6 @@ class Hospital:
             yield self.env.timeout(random.expovariate(1.0/self.config.MEAN_INTERARRIVAL_TIME))
             patient = self.generate_patient()
             patient.prep_queue_entry = self.env.now
-            
-            # Add to appropriate queue
-            if patient.priority == PatientPriority.EMERGENCY:
-                self.emergency_patients.append(patient)
-            else:
-                self.regular_patients.append(patient)
-                
             self.env.process(self.patient_process(patient))
     
     def patient_process(self, patient: Patient):
@@ -131,12 +105,6 @@ class Hospital:
         # Preparation phase
         with self.prep_rooms.request(priority=patient.priority.value) as req:
             yield req
-            # Remove from appropriate queue
-            if patient.priority == PatientPriority.EMERGENCY:
-                self.emergency_patients.remove(patient)
-            else:
-                self.regular_patients.remove(patient)
-                
             patient.prep_start = self.env.now
             yield self.env.timeout(patient.prep_time)
             patient.prep_end = self.env.now
@@ -181,14 +149,19 @@ class HospitalMonitor:
     def monitor(self):
         """Monitor process with priority queue tracking"""
         while True:
-            # Track queue lengths by priority
-            self.emergency_queue_lengths.append(len(self.hospital.emergency_patients))
-            self.regular_queue_lengths.append(len(self.hospital.regular_patients))
+            # Get queue lengths and split by priority
+            prep_queue = len(self.hospital.prep_rooms.queue)
+            emergency_prep = sum(1 for req in self.hospital.prep_rooms.queue 
+                               if req.priority == PatientPriority.EMERGENCY.value)
+            regular_prep = prep_queue - emergency_prep
+            
+            self.emergency_queue_lengths.append(emergency_prep)
+            self.regular_queue_lengths.append(regular_prep)
             
             # Track resource utilization
-            self.prep_utilization.append(self.hospital.prep_rooms.count / self.hospital.prep_rooms.capacity)
-            self.ot_utilization.append(self.hospital.operating_theatre.count)
-            self.recovery_utilization.append(self.hospital.recovery_rooms.count / self.hospital.recovery_rooms.capacity)
+            self.prep_utilization.append(len(self.hospital.prep_rooms.users) / self.hospital.prep_rooms.capacity)
+            self.ot_utilization.append(len(self.hospital.operating_theatre.users))
+            self.recovery_utilization.append(len(self.hospital.recovery_rooms.users) / self.hospital.recovery_rooms.capacity)
             
             yield self.env.timeout(self.interval)
     
