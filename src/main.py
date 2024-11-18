@@ -20,14 +20,14 @@ class SimulationConfig:
     NUM_RECOVERY_ROOMS: int = 3
     SIM_TIME: float = 10000
     
-    # Parameters for emergency cases
-    EMERGENCY_PROBABILITY: float = 0.2  # 20% chance of emergency
-    EMERGENCY_PREP_TIME_FACTOR: float = 0.5  # Emergency prep takes half the time
-    EMERGENCY_OPERATION_TIME_FACTOR: float = 0.8  # Emergency operation takes 80% of regular time
+    EMERGENCY_PROBABILITY: float = 0.2
+    EMERGENCY_PREP_TIME_FACTOR: float = 0.5
+    EMERGENCY_OPERATION_TIME_FACTOR: float = 0.8
+    MAX_PREP_QUEUE_LENGTH: int = 100
 
 @dataclass
 class Patient:
-    """Patient class with priority"""
+    """Patient class with priority and blocking time tracking"""
     id: int
     arrival_time: float
     prep_time: float
@@ -45,6 +45,10 @@ class Patient:
     recovery_queue_entry: float = 0
     recovery_start: float = 0
     departure_time: float = 0
+    
+    # Blocking time tracking
+    blocking_start: float = 0
+    blocking_end: float = 0
 
     def get_total_wait_time(self) -> float:
         """Calculate total waiting time in queues"""
@@ -53,12 +57,18 @@ class Patient:
         recovery_wait = self.recovery_start - self.operation_end
         return prep_wait + operation_wait + recovery_wait
 
+    def get_blocking_time(self) -> float:
+        """Calculate time OT was blocked waiting for recovery"""
+        if self.blocking_start and self.blocking_end:
+            return self.blocking_end - self.blocking_start
+        return 0
+
     def get_throughput_time(self) -> float:
         """Calculate total time in system"""
         return self.departure_time - self.arrival_time
 
 class Hospital:
-    """Main hospital simulation class with priority handling"""
+    """Main hospital simulation class with priority handling and blocking time"""
     def __init__(self, env: simpy.Environment, config: SimulationConfig):
         self.env = env
         self.config = config
@@ -70,16 +80,16 @@ class Hospital:
         self.recovery_rooms = simpy.PriorityResource(env, capacity=config.NUM_RECOVERY_ROOMS)
         
         self.patient_count = 0
+        self.current_blocking_start = None
+        self.discarded_patients = 0
         
     def generate_patient(self) -> Patient:
         """Creates a new patient with priority level"""
         self.patient_count += 1
         
-        # Determine if this is an emergency patient
         is_emergency = random.random() < self.config.EMERGENCY_PROBABILITY
         priority = PatientPriority.EMERGENCY if is_emergency else PatientPriority.REGULAR
         
-        # Adjust service times based on priority
         prep_time_factor = self.config.EMERGENCY_PREP_TIME_FACTOR if is_emergency else 1.0
         operation_time_factor = self.config.EMERGENCY_OPERATION_TIME_FACTOR if is_emergency else 1.0
         
@@ -96,12 +106,17 @@ class Hospital:
         """Generates new patients with priorities"""
         while True:
             yield self.env.timeout(random.expovariate(1.0/self.config.MEAN_INTERARRIVAL_TIME))
+            
+            if len(self.prep_rooms.queue) >= self.config.MAX_PREP_QUEUE_LENGTH:
+                self.discarded_patients += 1
+                continue
+            
             patient = self.generate_patient()
             patient.prep_queue_entry = self.env.now
             self.env.process(self.patient_process(patient))
     
     def patient_process(self, patient: Patient):
-        """Handles individual patient's journey with priority"""
+        """Handles individual patient's journey with priority and blocking"""
         # Preparation phase
         with self.prep_rooms.request(priority=patient.priority.value) as req:
             yield req
@@ -116,20 +131,28 @@ class Hospital:
             patient.operation_start = self.env.now
             yield self.env.timeout(patient.operation_time)
             patient.operation_end = self.env.now
-        
-        # Recovery phase
-        patient.recovery_queue_entry = self.env.now
-        with self.recovery_rooms.request(priority=patient.priority.value) as req:
-            yield req
+            
+            # Try to get a recovery room
+            recovery_request = self.recovery_rooms.request(priority=patient.priority.value)
+            recovery_result = yield recovery_request | self.env.timeout(0)
+            
+            # If no recovery room available, start blocking time
+            if recovery_request not in recovery_result:
+                patient.blocking_start = self.env.now
+                yield recovery_request
+                patient.blocking_end = self.env.now
+            
+            # Recovery phase
             patient.recovery_start = self.env.now
             yield self.env.timeout(patient.recovery_time)
             patient.departure_time = self.env.now
+            self.recovery_rooms.release(recovery_request)
             
             if self.monitor:
                 self.monitor.add_completed_patient(patient)
 
 class HospitalMonitor:
-    """Enhanced monitor with priority statistics"""
+    """Enhanced monitor with priority statistics and blocking time"""
     def __init__(self, env: simpy.Environment, hospital: 'Hospital', interval: float = 1.0):
         self.env = env
         self.hospital = hospital
@@ -176,6 +199,9 @@ class HospitalMonitor:
         """Returns statistics separated by priority"""
         stats = {}
         
+        total_blocking_time = 0
+        all_patients = self.emergency_patients + self.regular_patients
+        
         for priority, patients in [
             ("emergency", self.emergency_patients),
             ("regular", self.regular_patients)
@@ -183,14 +209,18 @@ class HospitalMonitor:
             if patients:
                 waiting_times = [p.get_total_wait_time() for p in patients]
                 throughput_times = [p.get_throughput_time() for p in patients]
+                blocking_times = [p.get_blocking_time() for p in patients]
                 
                 stats[priority] = {
                     'count': len(patients),
                     'avg_waiting_time': statistics.mean(waiting_times),
                     'max_waiting_time': max(waiting_times),
                     'avg_throughput_time': statistics.mean(throughput_times),
-                    'max_throughput_time': max(throughput_times)
+                    'max_throughput_time': max(throughput_times),
+                    'total_blocking_time': sum(blocking_times),
+                    'avg_blocking_time': statistics.mean(blocking_times) if blocking_times else 0
                 }
+                total_blocking_time += sum(blocking_times)
         
         # Overall system statistics
         stats['system'] = {
@@ -199,7 +229,11 @@ class HospitalMonitor:
             'recovery_utilization': statistics.mean(self.recovery_utilization) * 100,
             'avg_emergency_queue': statistics.mean(self.emergency_queue_lengths),
             'avg_regular_queue': statistics.mean(self.regular_queue_lengths),
-            'total_patients': len(self.emergency_patients) + len(self.regular_patients)
+            'total_patients': len(all_patients),
+            'total_blocking_time': total_blocking_time,
+            'blocking_percentage': (total_blocking_time / self.env.now) * 100 if self.env.now > 0 else 0,
+            'discarded_patients' : self.hospital.discarded_patients
+        
         }
         
         return stats
@@ -222,17 +256,22 @@ def run_simulation(config: SimulationConfig = SimulationConfig()) -> Dict:
         print(f"Count: {stats['emergency']['count']}")
         print(f"Average Wait Time: {stats['emergency']['avg_waiting_time']:.2f}")
         print(f"Average Throughput Time: {stats['emergency']['avg_throughput_time']:.2f}")
+        print(f"Total Blocking Time: {stats['emergency']['total_blocking_time']:.2f}")
     
     print(f"\nRegular Patients:")
     if 'regular' in stats:
         print(f"Count: {stats['regular']['count']}")
         print(f"Average Wait Time: {stats['regular']['avg_waiting_time']:.2f}")
         print(f"Average Throughput Time: {stats['regular']['avg_throughput_time']:.2f}")
+        print(f"Total Blocking Time: {stats['regular']['total_blocking_time']:.2f}")
     
     print(f"\nSystem Statistics:")
     print(f"Operating Theatre Utilization: {stats['system']['ot_utilization']:.2f}%")
     print(f"Average Emergency Queue Length: {stats['system']['avg_emergency_queue']:.2f}")
     print(f"Average Regular Queue Length: {stats['system']['avg_regular_queue']:.2f}")
+    print(f"Total System Blocking Time: {stats['system']['total_blocking_time']:.2f}")
+    print(f"Blocking Time Percentage: {stats['system']['blocking_percentage']:.2f}%")
+    print(f"Discarded Patients: {stats['system']['discarded_patients']}")
     
     return stats
 
