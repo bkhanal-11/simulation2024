@@ -68,6 +68,7 @@ def analyze_differences(results: Dict) -> Dict:
             queue_diffs = []
             blocking_diffs = []
             recovery_diffs = []
+            operations_diffs = []
             for k in range(len(results[config1])):
                 stats1 = results[config1][k]
                 stats2 = results[config2][k]
@@ -84,11 +85,16 @@ def analyze_differences(results: Dict) -> Dict:
                     stats1['system']['recovery_utilization'] - 
                     stats2['system']['recovery_utilization']
                 )
+                operations_diffs.append(
+                    stats1['system']['ot_utilization'] -
+                    stats2['system']['ot_utilization']
+                )
             
             differences[key] = {
                 'queue_length': compute_confidence_intervals(queue_diffs),
                 'blocking_probability': compute_confidence_intervals(blocking_diffs),
-                'recovery_utilization': compute_confidence_intervals(recovery_diffs)
+                'recovery_utilization': compute_confidence_intervals(recovery_diffs),
+                'operations_utilization': compute_confidence_intervals(operations_diffs)
             }
     
     return differences
@@ -115,11 +121,13 @@ def main():
         queue_lengths = [stats['system']['avg_regular_queue'] for stats in stats_list]
         blocking_probs = [stats['system']['blocking_percentage'] for stats in stats_list]
         recovery_utils = [stats['system']['recovery_utilization'] for stats in stats_list]
+        operations_utils = [stats['system']['ot_utilization'] for stats in stats_list]
 
         print(f"\nConfiguration: {config}")
         print_metric("Queue Length", compute_confidence_intervals(queue_lengths))
         print_metric("Blocking Probability", compute_confidence_intervals(blocking_probs), is_percentage=True)
         print_metric("Recovery Facilities Utilization", compute_confidence_intervals(recovery_utils), is_percentage=True)
+        print_metric("Operating Theatre Utilization", compute_confidence_intervals(operations_utils), is_percentage=True)
     
     # Analyze paired differences
     differences = analyze_differences(results)
