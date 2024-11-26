@@ -1,30 +1,32 @@
 import simpy
+import random
 import numpy as np
 from typing import Dict, List, Tuple
 from models.config import SimulationConfig
 from simulation.hospital import Hospital
 from simulation.monitor import HospitalMonitor
 from scipy import stats
+import json
 
 def run_simulation(config: SimulationConfig, seed: int, warmup_time: float = 1000.0) -> Dict:
     """Run a single simulation with warmup period"""
     np.random.seed(seed)
+    random.seed(seed)
     env = simpy.Environment()
     hospital = Hospital(env, config)
     monitor = HospitalMonitor(env, hospital)
 
-    # Run until warmup
+    # run the simulation until warmup
     env.process(hospital.patient_generator())
     env.run(until=warmup_time)
 
-    # Reset statistics after warmup
     monitor.emergency_patient_lengths = []
     monitor.regular_patient_lengths = []
     monitor.prep_utilization = []
     monitor.ot_utilization = []
     monitor.recovery_utilization = []
     
-    # Continue simulation for measurement period
+    # continue simulation for simualtion time
     env.run(until=warmup_time + config.SIM_TIME)
     
     return monitor.get_statistics()
@@ -35,12 +37,12 @@ def compute_confidence_intervals(data: List[float], confidence: float = 0.95) ->
     sem = stats.sem(data)
     interval = sem * stats.t.ppf((1 + confidence) / 2., len(data) - 1)
     
-    # For percentage metrics (like blocking probability), clamp to [0, 100]
-    if all(0 <= x <= 100 for x in data):  # Check if the data represents percentages
+    # to calculate percentage metrics like blocking probability
+    if all(0 <= x <= 100 for x in data):  # checks if the data represents percentages
         return (
             mean,
-            max(0, mean - interval),  # Lower bound clamped to 0
-            min(100, mean + interval)  # Upper bound clamped to 100
+            max(0, mean - interval),  # lower bound
+            min(100, mean + interval)  # upper bound
         )
     
     return mean, mean - interval, mean + interval
@@ -85,7 +87,7 @@ def analyze_differences(results: Dict) -> Dict:
     
     return differences
 
-def main():
+def main():    
     # Define configurations
     configs = [
         SimulationConfig(NUM_PREP_ROOMS=3, NUM_RECOVERY_ROOMS=4, SIM_TIME=1000),
@@ -111,7 +113,7 @@ def main():
         print(f"\nConfiguration: {config}")
         print_metric("Queue Length", compute_confidence_intervals(queue_lengths))
         print_metric("Blocking Probability", compute_confidence_intervals(blocking_probs), is_percentage=True)
-        print_metric("Recovery Utilization", compute_confidence_intervals(recovery_utils), is_percentage=True)
+        print_metric("Recovery Facilities Utilization", compute_confidence_intervals(recovery_utils), is_percentage=True)
     
     # Analyze paired differences
     differences = analyze_differences(results)
