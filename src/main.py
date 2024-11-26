@@ -67,6 +67,7 @@ def analyze_differences(results: Dict) -> Dict:
             # Calculate paired differences for each metric
             queue_diffs = []
             blocking_diffs = []
+            recovery_diffs = []
             for k in range(len(results[config1])):
                 stats1 = results[config1][k]
                 stats2 = results[config2][k]
@@ -79,10 +80,15 @@ def analyze_differences(results: Dict) -> Dict:
                     stats1['system']['blocking_percentage'] - 
                     stats2['system']['blocking_percentage']
                 )
+                recovery_diffs.append(
+                    stats1['system']['recovery_utilization'] - 
+                    stats2['system']['recovery_utilization']
+                )
             
             differences[key] = {
                 'queue_length': compute_confidence_intervals(queue_diffs),
-                'blocking_probability': compute_confidence_intervals(blocking_diffs)
+                'blocking_probability': compute_confidence_intervals(blocking_diffs),
+                'recovery_utilization': compute_confidence_intervals(recovery_diffs)
             }
     
     return differences
