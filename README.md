@@ -2,6 +2,12 @@
 
 A simple hospital simulation system for operating theaters and patient queues 👨‍⚕️.
 
+## What's New 🆕
+- **Enhanced Simulation Configuration**: The simulation now supports multiple configurations with different numbers of preparation and recovery rooms.
+- **Warmup Period**: Introduced a warmup period to stabilize the simulation before collecting statistics.
+- **Statistical Analysis**: Added computation of confidence intervals for key metrics.
+- **Paired Differences Analysis**: Implemented a method to analyze differences between configurations, highlighting significant changes in performance metrics.
+
 ## Requirements ⚡
 
 Install Python packages with this command.
