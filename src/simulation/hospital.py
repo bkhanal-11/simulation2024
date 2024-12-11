@@ -44,13 +44,9 @@ class Hospital:
         return Patient(
             id=self.accepted_patient_count,
             arrival_time=self.env.now,
-            prep_time=random.expovariate(
-                1.0 / (self.config.MEAN_PREP_TIME * prep_time_factor)
-            ),
-            operation_time=random.expovariate(
-                1.0 / (self.config.MEAN_OPERATION_TIME * operation_time_factor)
-            ),
-            recovery_time=random.expovariate(1.0 / self.config.MEAN_RECOVERY_TIME),
+            prep_time=self.config.get_prep_time(is_emergency=is_emergency),
+            operation_time=self.config.get_operation_time(is_emergency=is_emergency),
+            recovery_time=self.config.get_recovery_time(),
             priority=priority,
         )
 
@@ -58,7 +54,7 @@ class Hospital:
         """Generates new patients with priorities"""
         while True:
             yield self.env.timeout(
-                random.expovariate(1.0 / self.config.MEAN_INTERARRIVAL_TIME)
+                self.config.get_interarrival_time()
             )
 
             if len(self.prep_rooms.queue) >= self.config.MAX_PREP_QUEUE_LENGTH:
