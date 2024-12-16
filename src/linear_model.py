@@ -128,33 +128,27 @@ class ExperimentDesign:
     def build_regression_model(self, results_df: pd.DataFrame) -> sm.regression.linear_model.RegressionResultsWrapper:
         """Build and analyze regression model with proper data type handling"""
         
-        # Creating dummy variables for categorical variables
         categorical_features = ['interarrival_type', 'prep_type']
         dummies = pd.get_dummies(results_df[categorical_features], drop_first=True)
         
-        # Create feature matrix X with proper numeric types
         X = pd.DataFrame()
         
-        # Add dummy variables
         for col in dummies.columns:
             X[col] = dummies[col].astype(float)
         
-        # Add numeric variables
         X['interarrival_mean'] = results_df['interarrival_mean'].astype(float)
         X['prep_mean'] = results_df['prep_mean'].astype(float)
         X['num_prep_rooms'] = results_df['num_prep_rooms'].astype(float)
         X['num_recovery_rooms'] = results_df['num_recovery_rooms'].astype(float)
         
-        # Add constant
         X = sm.add_constant(X)
         
-        # Convert target variable to float
+        # Target as avg_queue_length
         y = results_df['avg_queue_length'].astype(float)
         
         # Fit model
         model = sm.OLS(y, X).fit()
         
-        # Print feature names for verification
         print("\nFeatures included in regression:")
         for i, feature in enumerate(X.columns):
             print(f"{i+1}. {feature}")
